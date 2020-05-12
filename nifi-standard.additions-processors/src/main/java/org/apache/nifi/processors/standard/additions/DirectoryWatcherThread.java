@@ -48,7 +48,7 @@ public class DirectoryWatcherThread extends Thread {
 		WatchService watchService = null;
 		try {
 			Map<WatchKey, String> keyMap = new HashMap<>(paths.size());
-			
+
 			watchService = FileSystems.getDefault().newWatchService();
 			for (Entry<String, Path> entry : paths.entrySet()) {
 				Path path = entry.getValue();
