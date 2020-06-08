@@ -19,11 +19,13 @@ package org.apache.nifi.processors.standard.additions;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.StandardWatchEventKinds;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -103,6 +105,40 @@ public class WatchDirectoryTest {
     }
 
     @Test
+    public void testMultiModifications() throws Exception {
+        runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.FALSE.toString());
+        runner.setProperty(WatchDirectory.NOTIFY_ON_MODIFIED, Boolean.TRUE.toString());
+        runner.setProperty(WatchDirectory.NOTIFY_ON_DELETED, Boolean.FALSE.toString());
+        runner.setProperty(WatchDirectory.MERGE_MODIFICATION_EVENTS, Integer.toString(500));
+        
+        String filename = "hello.txt";
+        CompletableFuture<Throwable> future = CompletableFuture
+        	.runAsync(WatchDirectoryTest::sleepThread)
+        	.thenRun(() -> createFile(filename))
+        	.thenRun(() -> addContent(filename, "Hello"))
+        	.thenRun(WatchDirectoryTest::sleepThread)
+        	.thenRun(() -> addContent(filename, "Hello2"))
+        	.thenRun(WatchDirectoryTest::sleepThread)
+        	.thenRun(() -> addContent(filename, "Hello3"))
+        	.thenRun(WatchDirectoryTest::sleepThread)
+        	.thenRun(() -> addContent(filename, "Hello4"))
+        	.thenRun(() -> WatchDirectoryTest.sleepThread(1_000))
+	    	.handle((value, exc) -> onError(exc));
+        
+        clearTransferStateAndRun(5);
+        
+        assertNull(future.get(10, TimeUnit.SECONDS));
+        runner.assertTransferCount(WatchDirectory.SUCCESS, 1);
+        
+        final List<MockFlowFile> successFiles1 = runner.getFlowFilesForRelationship(WatchDirectory.SUCCESS);
+        MockFlowFile flowFile = successFiles1.get(0);
+        assertEquals(filename, flowFile.getAttribute(CoreAttributes.FILENAME.key()));
+        assertEquals(testDir.toString(), flowFile.getAttribute(CoreAttributes.ABSOLUTE_PATH.key()));
+        assertEquals(StandardWatchEventKinds.ENTRY_MODIFY.name(), flowFile.getAttribute(WatchDirectory.WATCH_EVENT_TYPE));
+        assertEquals(dynamicPropertyName, flowFile.getAttribute(WatchDirectory.WATCH_PROPERTY_NAME));
+    }
+
+    @Test
     public void testDotRename() throws Exception {        
         String filenameFrom = ".hello.txt";
         String filenameTo = "world.txt";
@@ -121,7 +157,7 @@ public class WatchDirectoryTest {
     	.thenRun(WatchDirectoryTest::deleteTestDirectory)
     	.handle((value, exc) -> onError(exc));
     
-	    clearTransferStateAndRun();
+	    clearTransferStateAndRun(5);
 	    
 	    assertNull(future.get(10, TimeUnit.SECONDS));
         runner.assertTransferCount(WatchDirectory.SUCCESS, 1);
@@ -234,8 +270,12 @@ public class WatchDirectoryTest {
     }
 
     private void clearTransferStateAndRun() throws InterruptedException {
+    	clearTransferStateAndRun(1);
+    }
+    
+    private void clearTransferStateAndRun(int count) throws InterruptedException {
         runner.clearTransferState();
-        runner.run();
+        runner.run(count);
     }
     
     
@@ -268,8 +308,12 @@ public class WatchDirectoryTest {
 	}
     
     private static final void sleepThread() {
+    	sleepThread(WAIT);
+    }
+    
+    private static final void sleepThread(int sleep) {
 		try {
-			Thread.sleep(WAIT);
+			Thread.sleep(sleep);
 		} catch (InterruptedException e) {
 			throw new IllegalStateException(e);
 		}
@@ -280,6 +324,21 @@ public class WatchDirectoryTest {
     		e.printStackTrace();
     	
     	return e;
+    }
+    
+    private static final Path addContent(String filename, String content) {
+		try {
+			Path p = testDir.resolve(filename);
+			
+			try(BufferedWriter newBufferedWriter = Files.newBufferedWriter(p, StandardOpenOption.APPEND)){
+				newBufferedWriter.write("Hello");
+			}
+			
+			return p;
+		} catch (IOException e) {
+			throw new IllegalStateException(e);
+		}
+    	
     }
 
     private static final Path createFile(String filename) {

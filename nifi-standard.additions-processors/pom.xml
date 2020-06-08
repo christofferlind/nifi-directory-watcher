@@ -22,7 +22,7 @@
         <version>${dw.version}</version>
     </parent>
 
-    <artifactId>nifi-standard.additions-processors</artifactId>
+    <artifactId>nifi-directory-watcher-processors</artifactId>
     <packaging>jar</packaging>
 
     <dependencies>

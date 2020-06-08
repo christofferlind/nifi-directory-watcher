@@ -165,6 +165,16 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
             .addValidator(StandardValidators.REGULAR_EXPRESSION_VALIDATOR)
             .build();
 
+    public static final PropertyDescriptor MERGE_MODIFICATION_EVENTS = new Builder()
+            .name("MergeModificationEvents")
+            .description("If listening for modifications, this property will determine how long time (in millis) two or more modification "
+            		+ "events will be considered as the same event. However, the merged event will not be emitted "
+            		+ "until the last event has been received plus the number of millis give in this property.")
+            .required(false)
+            .defaultValue("500")
+            .addValidator(StandardValidators.POSITIVE_INTEGER_VALIDATOR)
+            .build();
+
     public static final Relationship SUCCESS = new Relationship.Builder()
             .name("success")
             .description("")
@@ -198,6 +208,7 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
         descriptors.add(NOTIFY_ON_DELETED);
         descriptors.add(IGNORE_HIDDEN_FILES);
         descriptors.add(FILE_FILTER);
+        descriptors.add(MERGE_MODIFICATION_EVENTS);
         this.descriptors = Collections.unmodifiableList(descriptors);
 
         final Set<Relationship> relationships = new HashSet<Relationship>();
@@ -235,11 +246,12 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
     	boolean notifyDeleted = Boolean.toString(Boolean.TRUE).equalsIgnoreCase(context.getProperty(NOTIFY_ON_DELETED).getValue());
     	
     	ignoreHiddenFiles = Boolean.toString(Boolean.TRUE).equalsIgnoreCase(context.getProperty(IGNORE_HIDDEN_FILES).getValue());
+    	int maxEventAge = Integer.decode(context.getProperty(MERGE_MODIFICATION_EVENTS).getValue());
     	
     	String regexFileFilter = context.getProperty(FILE_FILTER).getValue();
     	fileFilter = Pattern.compile(regexFileFilter);
 
-    	Collection<WatchEvent.Kind<?>> kinds = new ArrayList<WatchEvent.Kind<?>>(3);
+    	Collection<WatchEvent.Kind<?>> kinds = new HashSet<WatchEvent.Kind<?>>(3);
 
     	if(notifyCreate)
     		kinds.add(StandardWatchEventKinds.ENTRY_CREATE);
@@ -247,8 +259,6 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
     		kinds.add(StandardWatchEventKinds.ENTRY_MODIFY);
     	if(notifyDeleted)
     		kinds.add(StandardWatchEventKinds.ENTRY_DELETE);
-
-    	Kind<?>[] kindArray = kinds.toArray(new WatchEvent.Kind[kinds.size()]);
 
     	Map<PropertyDescriptor, String> properties = context.getProperties();
     	paths = new LinkedHashMap<>();
@@ -264,9 +274,9 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
     		paths.put(name, path);
     	}
 
-    	threadGroup = new ThreadGroup(Thread.currentThread().getThreadGroup(), "NiFi Directory Watcher");
-    	watcherThread = new DirectoryWatcherThread(threadGroup, paths, kindArray, this::handleDirectoryEvents, getLogger());
-    	watcherThread.start();
+		threadGroup = new ThreadGroup(Thread.currentThread().getThreadGroup(), "NiFi Directory Watcher");
+		watcherThread = new DirectoryWatcherThread(threadGroup, paths, kinds, maxEventAge, this::handleDirectoryEvents, getLogger());
+		watcherThread.start();
     }
     
 	@OnUnscheduled
@@ -300,14 +310,15 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 		return testing;
 	}
 
-	private void handleDirectoryEvents(String propName, List<WatchEvent<?>> events) {
+	private void handleDirectoryEvents(String propName, String eventKey, List<WatchEvent<?>> events) {
 		ProcessSessionFactory sessionFactory = sessionFactoryReference.get();
 		if(sessionFactory == null) {
 			IllegalStateException exc = new IllegalStateException("No session factory has been set. Can not create any flow files");
 			getLogger().error(exc.getMessage(), exc);
 			return;
 		}
-		
+
+		getLogger().debug("Creating process session");
 		ProcessSession session = sessionFactory.createSession();
 		Collection<FlowFile> createdFlowFiles = new LinkedList<>();
 		
@@ -315,28 +326,34 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 		
 		for (WatchEvent<?> watchEvent : events) {
 			String filename = watchEvent.context().toString();
+			Kind<?> eventType = watchEvent.kind();
 			
-			if(ignoreHiddenFiles && filename.startsWith("."))
+			if(ignoreHiddenFiles && filename.startsWith(".")) {
 				continue;
+			}
 			
-			if(!fileFilter.matcher(filename).matches())
+			if(!fileFilter.matcher(filename).matches()) {
+				getLogger().debug("File " + filename + " is not matching the file filter, ignoring");
 				continue;
+			}
 			
 			FlowFile flowFile = session.create();
 			
-			Map<String, String> attributes = createAttributes(filename, affectedPath, watchEvent);
+			Map<String, String> attributes = createAttributes(filename, affectedPath, eventType);
 			attributes.put(WATCH_PROPERTY_NAME, propName);
-			attributes.put(WATCH_EVENT_TYPE, watchEvent.kind().name());
+			attributes.put(WATCH_EVENT_TYPE, eventType.name());
 			
 			flowFile = session.putAllAttributes(flowFile, attributes);
 			createdFlowFiles.add(flowFile);
 		}
 		
-		if(createdFlowFiles.size() > 0)
+		if(createdFlowFiles.size() > 0) {
 			session.transfer(createdFlowFiles, SUCCESS);
+			session.commit();
+		}
 	}
 
-	private Map<String, String> createAttributes(String filename, Path affectedPath, WatchEvent<?> watchEvent) {
+	private Map<String, String> createAttributes(String filename, Path affectedPath, Kind<?> eventType) {
 		Path fullPath = affectedPath.resolve(filename);
 		
 		Map<String, String> attributes = new HashMap<>(10);
@@ -344,7 +361,7 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 		attributes.put(CoreAttributes.FILENAME.key(), filename);
 		attributes.put(CoreAttributes.ABSOLUTE_PATH.key(), affectedPath.toString());
 
-		if(!StandardWatchEventKinds.ENTRY_DELETE.equals(watchEvent.kind())){
+		if(!StandardWatchEventKinds.ENTRY_DELETE.equals(eventType)){
 			attributes.put(FILE_SIZE_ATTRIBUTE, Long.toString(getSize(fullPath)));
 			
 			String modifiedString = getModificationTime(fullPath);

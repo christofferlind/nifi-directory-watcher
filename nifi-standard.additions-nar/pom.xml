@@ -22,7 +22,7 @@
         <version>${dw.version}</version>
     </parent>
 
-    <artifactId>nifi-standard.additions-nar</artifactId>
+    <artifactId>nifi-directory-watcher-nar</artifactId>
     <packaging>nar</packaging>
     <properties>
         <maven.javadoc.skip>true</maven.javadoc.skip>
@@ -32,7 +32,7 @@
     <dependencies>
         <dependency>
             <groupId>org.apache.nifi</groupId>
-            <artifactId>nifi-standard.additions-processors</artifactId>
+            <artifactId>nifi-directory-watcher-processors</artifactId>
             <version>${dw.version}</version>
         </dependency>
     </dependencies>
