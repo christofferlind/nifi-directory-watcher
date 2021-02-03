@@ -15,10 +15,11 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
-public class EventMerger<T> implements AutoCloseable{
+import org.apache.nifi.processors.standard.additions.TriConsumer;
+
+public class EventMerger<T> implements AutoCloseable {
 	
 	private ThreadPoolExecutor executor;
 	
@@ -28,7 +29,7 @@ public class EventMerger<T> implements AutoCloseable{
 
 	private ThreadGroup group;
 
-	private BiConsumer<String, Collection<T>> eventConsumer;
+	private TriConsumer<String, String, Collection<T>> eventConsumer;
 	private Consumer<Throwable> onError = null;
 
 	private long eventWaitTimeout = 100l;
@@ -36,7 +37,7 @@ public class EventMerger<T> implements AutoCloseable{
 	
 	private Duration totalMaxWait = null;  
 
-	public EventMerger(ThreadGroup group, int threadCount, BiConsumer<String, Collection<T>> eventConsumer) {
+	public EventMerger(ThreadGroup group, int threadCount, TriConsumer<String, String, Collection<T>> eventConsumer) {
 		Objects.requireNonNull(group);
 		Objects.requireNonNull(eventConsumer);
 		
@@ -57,7 +58,7 @@ public class EventMerger<T> implements AutoCloseable{
         });
 	}
 	
-	public void notify(String key, T event) {
+	public void notify(String propName, String key, T event) {
 		if(executor.isShutdown())
 			throw new IllegalStateException("EventMerger is shutdown!");
 		
@@ -70,6 +71,7 @@ public class EventMerger<T> implements AutoCloseable{
 				r.timeout.set(Instant.now().plus(eventWaitTimeout, ChronoUnit.MILLIS));
 			} else {
 				runnable = new TimedRunnable();
+				runnable.propName = propName;
 				runnable.events.add(event);
 				runnable.timeout.set(Instant.now().plus(eventWaitTimeout, ChronoUnit.MILLIS));
 				runnable.onStartConsumingMessages = () -> {
@@ -130,6 +132,8 @@ public class EventMerger<T> implements AutoCloseable{
 		private AtomicReference<Instant> timeout = new AtomicReference<>();
 		private Collection<T> events = Collections.synchronizedCollection(new LinkedList<>());
 		private Runnable onStartConsumingMessages;
+
+		private String propName;
 		private String key;
 
 		@Override
@@ -151,7 +155,7 @@ public class EventMerger<T> implements AutoCloseable{
 
 					onStartConsumingMessages.run();
 					
-					eventConsumer.accept(key, events);
+					eventConsumer.accept(propName, key, events);
 					return;
 				}
 			} catch (InterruptedException e) {

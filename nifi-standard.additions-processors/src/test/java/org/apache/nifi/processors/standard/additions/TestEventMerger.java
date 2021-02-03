@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Vector;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -31,14 +30,14 @@ public class TestEventMerger {
     	Collection<String> foundEvents = new ArrayList<>(messageCount);
     	AtomicInteger counter = new AtomicInteger(0);
     	
-    	BiConsumer<String, Collection<String>> handleEvents = (key, collection) -> {
+    	TriConsumer<String, String, Collection<String>> handleEvents = (prop, key, collection) -> {
     		foundEvents.addAll(collection);
     		counter.incrementAndGet();
     	};
     	
     	try(EventMerger<String> merger = new EventMerger<String>(Thread.currentThread().getThreadGroup(), 1, handleEvents)){
     		for (String string : sentEvents) {
-    			merger.notify("t1", string);
+    			merger.notify("prop", "t1", string);
     			Thread.sleep(50);
 			}
     		
@@ -55,19 +54,19 @@ public class TestEventMerger {
     	
     	AtomicInteger counter = new AtomicInteger(0);
     	
-    	BiConsumer<String, Collection<String>> handleEvents = (key, collection) -> {
+    	TriConsumer<String, String, Collection<String>> handleEvents = (prop, key, collection) -> {
     		foundEvents.addAll(collection);
     		counter.incrementAndGet();
     	};
     	
     	try(EventMerger<String> merger = new EventMerger<String>(Thread.currentThread().getThreadGroup(), 1, handleEvents)){
-    		merger.notify("t1", "t1-1");
+    		merger.notify("prop", "t1", "t1-1");
     		Thread.sleep(50);
-    		merger.notify("t1", "t1-2");
-    		merger.notify("t2", "t2-1");
+    		merger.notify("prop", "t1", "t1-2");
+    		merger.notify("prop", "t2", "t2-1");
     		Thread.sleep(50);
-    		merger.notify("t1", "t1-3");
-    		merger.notify("t2", "t2-2");
+    		merger.notify("prop", "t1", "t1-3");
+    		merger.notify("prop", "t2", "t2-2");
     		Thread.sleep(500);
 		};
 		
@@ -85,7 +84,7 @@ public class TestEventMerger {
     	
     	Object lock = new Object();
     	
-    	BiConsumer<String, Collection<String>> handleEvents = (key, collection) -> {
+    	TriConsumer<String, String, Collection<String>> handleEvents = (prop, key, collection) -> {
     		synchronized (lock) {
     			foundEvents.addAll(collection);
     			int count = counter.incrementAndGet();
@@ -99,12 +98,12 @@ public class TestEventMerger {
 
     		//Constantly emit events
     		for (int i = 0; i < events; i++) {
-    			merger.notify("t1", "t1-" + i);
+    			merger.notify("prop", "t1", "t1-" + i);
     			Thread.sleep(30);
 
     			// In the middle, emit one event
     			if(i == events/2) {
-    	    		merger.notify("t3", "t3-1");
+    	    		merger.notify("prop", "t3", "t3-1");
     			}
 			}
 
@@ -133,7 +132,7 @@ public class TestEventMerger {
     	
     	AtomicInteger counter = new AtomicInteger(0);
     	
-    	BiConsumer<String, Collection<Integer>> handleEvents = (key, collection) -> {
+    	TriConsumer<String, String, Collection<Integer>> handleEvents = (prop, key, collection) -> {
     		assertArrayEquals(expectedBatch, collection.toArray(new Integer[collection.size()]));
     		counter.incrementAndGet();
     	};
@@ -145,10 +144,10 @@ public class TestEventMerger {
     		merger.setEventWaitTimeout(100);
 
     		for (int i = 0; i < events; i++) {
-    			merger.notify("t1", i);
-    			merger.notify("t2", i);
-    			merger.notify("t3", i);
-    			merger.notify("t4", i);
+    			merger.notify("prop", "t1", i);
+    			merger.notify("prop", "t2", i);
+    			merger.notify("prop", "t3", i);
+    			merger.notify("prop", "t4", i);
     			Thread.sleep(30);
 			}
 
@@ -173,7 +172,7 @@ public class TestEventMerger {
     	
     	AtomicInteger counter = new AtomicInteger(0);
     	
-    	BiConsumer<String, Collection<Integer>> handleEvents = (key, collection) -> {
+    	TriConsumer<String, String, Collection<Integer>> handleEvents = (prop, key, collection) -> {
 //    		System.out.println(collection.stream().map(i -> Integer.toString(i)).collect(Collectors.joining(",")));
     		assertEquals(5, collection.size());
     		counter.incrementAndGet();
@@ -187,7 +186,7 @@ public class TestEventMerger {
     		merger.setTotalMaxWait(Duration.of(500, ChronoUnit.MILLIS));
 
     		for (int i = 0; i < events; i++) {
-    			merger.notify("t1", i);
+    			merger.notify("prop", "t1", i);
     			Thread.sleep(110);
 			}
 

@@ -17,6 +17,7 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.nifi.logging.ComponentLog;
+import org.apache.nifi.processors.standard.additions.events.EventMerger;
 
 public class DirectoryWatcherThread extends Thread {
 	private final Map<String, Path> paths;
@@ -25,16 +26,16 @@ public class DirectoryWatcherThread extends Thread {
 	
 	private volatile boolean stopped = false;
 
-	private EventMergerThread<WatchEvent<?>> mergeEventsCache = null;
+	private EventMerger<WatchEvent<?>> mergeEventsCache = null;
 	
-	private final TriConsumer<String, String, List<WatchEvent<?>>> eventConsumer;
+	private final TriConsumer<String, String, Collection<WatchEvent<?>>> eventConsumer;
 
 	public DirectoryWatcherThread(
 			ThreadGroup group, 
 			Map<String, Path> paths, 
 			Collection<WatchEvent.Kind<?>> kinds,
 			int maxEventAge,
-			TriConsumer<String, String, List<WatchEvent<?>>> eventConsumer,
+			TriConsumer<String, String, Collection<WatchEvent<?>>> eventConsumer,
 			ComponentLog logger) {
 		
 		Objects.requireNonNull(paths);
@@ -48,8 +49,8 @@ public class DirectoryWatcherThread extends Thread {
 		this.setDaemon(true);
 		
 		if(kinds.contains(StandardWatchEventKinds.ENTRY_MODIFY)) {
-			mergeEventsCache = new EventMergerThread<>(group, eventConsumer);
-			mergeEventsCache.setMaxEventAge(maxEventAge);
+			mergeEventsCache = new EventMerger<WatchEvent<?>>(group, 2, this.eventConsumer);
+			mergeEventsCache.setEventWaitTimeout(maxEventAge);
 		}
 	}
 	
@@ -70,9 +71,6 @@ public class DirectoryWatcherThread extends Thread {
 				debugMessage("Registered path: " + path);
 			}
 
-			if(mergeEventsCache != null)
-				mergeEventsCache.start();
-			
 			while(!isInterrupted()) {
 				if(stopped)
 					return;
@@ -91,7 +89,7 @@ public class DirectoryWatcherThread extends Thread {
 						//If it is a modification event, try to merge it
 						if(StandardWatchEventKinds.ENTRY_MODIFY.equals(watchEvent.kind())) {
 							String eventKey = String.format("%s,%s,%s", propName, watchEvent.kind().name(), watchEvent.context().toString());
-							mergeEventsCache.addEvent(propName, eventKey, watchEvent);
+							mergeEventsCache.notify(propName, eventKey, watchEvent);
 						} else {
 							eventConsumer.accept(propName, watchEvent.kind().name(), Collections.singletonList(watchEvent));
 						}
@@ -115,11 +113,6 @@ public class DirectoryWatcherThread extends Thread {
 				} catch (Throwable e) {
 					logger.error(e.getMessage(), e);
 				}
-			}
-			
-			if(mergeEventsCache != null) {
-				mergeEventsCache.interrupt();
-				mergeEventsCache = null;
 			}
 		}
 		

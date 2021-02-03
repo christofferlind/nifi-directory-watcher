@@ -310,7 +310,7 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 		return testing;
 	}
 
-	private void handleDirectoryEvents(String propName, String eventKey, List<WatchEvent<?>> events) {
+	private void handleDirectoryEvents(String propName, String eventKey, Collection<WatchEvent<?>> events) {
 		ProcessSessionFactory sessionFactory = sessionFactoryReference.get();
 		if(sessionFactory == null) {
 			IllegalStateException exc = new IllegalStateException("No session factory has been set. Can not create any flow files");
