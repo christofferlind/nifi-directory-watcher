@@ -18,6 +18,7 @@ package org.apache.nifi.processors.standard.additions;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -40,6 +41,7 @@ import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.util.MockFlowFile;
 import org.apache.nifi.util.TestRunner;
 import org.apache.nifi.util.TestRunners;
+import org.junit.After;
 import org.junit.Assume;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -79,6 +81,11 @@ public class WatchDirectoryTest {
                 .required(false).dynamic(true).build(), testDir.toString());
     }
     
+    @After
+    public void cleanup() {
+    	deleteTestDirectory();
+    }
+    
     @Test
     public void testCreate() throws Exception {
         String filename = "hello.txt";
@@ -106,8 +113,53 @@ public class WatchDirectoryTest {
         assertEquals(StandardWatchEventKinds.ENTRY_CREATE.name(), flowFile.getAttribute(WatchDirectory.WATCH_EVENT_TYPE));
         assertEquals(dynamicPropertyName, flowFile.getAttribute(WatchDirectory.WATCH_PROPERTY_NAME));
     }
-
+    
     @Test
+    public void testRsync() throws Exception {
+    	runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.TRUE.toString());
+    	runner.setProperty(WatchDirectory.NOTIFY_ON_MODIFIED, Boolean.TRUE.toString());
+    	runner.setProperty(WatchDirectory.NOTIFY_ON_DELETED, Boolean.FALSE.toString());
+
+    	runner.setRunSchedule(WAIT*2);
+
+    	String filename = "hello.txt";
+
+    	String fileSrc = testDir.toString() + "/big-file.bin";
+    	String fileDst = testDir.toString() + "/" + filename;
+
+    	int fileSize = 300;
+		shellExecute("fallocate -l " + fileSize + "M " + fileSrc);
+
+    	CompletableFuture<Void> future = CompletableFuture
+    	.runAsync(WatchDirectoryTest::sleepThread)
+    	.thenRun(() -> shellExecute("rsync -hitP " + fileSrc + " " + fileDst));
+
+    	clearTransferStateAndRun(10);
+    	
+    	assertTrue(future.isDone());
+
+    	runner.assertTransferCount(WatchDirectory.FAILURE, 0);
+    	runner.assertTransferCount(WatchDirectory.SUCCESS, 1);
+
+    	final List<MockFlowFile> successFiles1 = runner.getFlowFilesForRelationship(WatchDirectory.SUCCESS);
+    	MockFlowFile flowFile = successFiles1.get(0);
+    	assertEquals(filename, flowFile.getAttribute(CoreAttributes.FILENAME.key()));
+    	assertEquals(testDir.toString(), flowFile.getAttribute(CoreAttributes.ABSOLUTE_PATH.key()));
+    	assertEquals(StandardWatchEventKinds.ENTRY_CREATE.name(), flowFile.getAttribute(WatchDirectory.WATCH_EVENT_TYPE));
+    	assertEquals(dynamicPropertyName, flowFile.getAttribute(WatchDirectory.WATCH_PROPERTY_NAME));
+    	assertEquals(fileSize * 1024 * 1024, Integer.decode(flowFile.getAttribute(WatchDirectory.FILE_SIZE_ATTRIBUTE)).intValue());
+    }
+
+    private void shellExecute(String cmd) {
+		try {
+			Process process = Runtime.getRuntime().exec(cmd);
+			process.waitFor();
+		} catch (Exception e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
+	@Test
     public void testMultiModifications() throws Exception {
         runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.TRUE.toString());
         runner.setProperty(WatchDirectory.NOTIFY_ON_MODIFIED, Boolean.TRUE.toString());
