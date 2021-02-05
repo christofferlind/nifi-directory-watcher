@@ -69,8 +69,8 @@ import org.apache.nifi.processor.util.StandardValidators;
 @InputRequirement(Requirement.INPUT_FORBIDDEN)
 @Tags({"file", "get", "list", "ingest", "source", "filesystem", "inotify", "watchservice"})
 
-// These lines is taken from org.apache.nifi.processors.standard.ListFile
-@CapabilityDescription("Listens for files on the local filesystem using java WatchService. For each file that is listed, " +
+// These lines are taken from org.apache.nifi.processors.standard.ListFile
+@CapabilityDescription("Listens for files on the local filesystem using java WatchService. For each file that is catched, " +
 		"creates a FlowFile that represents the file so that it can be fetched in conjunction with FetchFile. Unlike " +
 		"GetFile, this Processor does not delete any data from the local filesystem.")
 @SeeAlso({})
@@ -82,8 +82,8 @@ import org.apache.nifi.processor.util.StandardValidators;
 			"Subdirectories property is set to true and a file is picked up from /tmp/abc/1/2/3, then the path " +
 			"attribute will be set to \"/tmp/abc/1/2/3/\"."),
 	@WritesAttribute(attribute=WatchDirectory.WATCH_PROPERTY_NAME, description="The name of the dynamic property that has been triggered"),
-	@WritesAttribute(attribute=WatchDirectory.WATCH_EVENT_TYPE, description="The event type that triggered."),
-	// These lines is taken from org.apache.nifi.processors.standard.ListFile
+	@WritesAttribute(attribute=WatchDirectory.WATCH_EVENT_TYPE, description="A comma seperated list of event types that triggered."),
+	// These lines are taken from org.apache.nifi.processors.standard.ListFile
 	@WritesAttribute(attribute=WatchDirectory.FILE_OWNER_ATTRIBUTE, description="The user that owns the file in filesystem"),
 	@WritesAttribute(attribute=WatchDirectory.FILE_GROUP_ATTRIBUTE, description="The group that owns the file in filesystem"),
 	@WritesAttribute(attribute=WatchDirectory.FILE_SIZE_ATTRIBUTE, description="The number of bytes in the file in filesystem"),
@@ -92,10 +92,6 @@ import org.apache.nifi.processor.util.StandardValidators;
 			"rw-rw-r--"),
 	@WritesAttribute(attribute=WatchDirectory.FILE_LAST_MODIFY_TIME_ATTRIBUTE, description="The timestamp of when the file in filesystem was " +
 			"last modified as 'yyyy-MM-dd'T'HH:mm:ssZ'"),
-	//    @WritesAttribute(attribute=WatchDirectory.FILE_LAST_ACCESS_TIME_ATTRIBUTE, description="The timestamp of when the file in filesystem was " +
-	//            "last accessed as 'yyyy-MM-dd'T'HH:mm:ssZ'"),
-	//    @WritesAttribute(attribute=WatchDirectory.FILE_CREATION_TIME_ATTRIBUTE, description="The timestamp of when the file in filesystem was " +
-	//            "created as 'yyyy-MM-dd'T'HH:mm:ssZ'")
 })
 @DynamicProperty(
 		name = "A name for the path, this is passed on as an attribute when a flowfile is created",
@@ -104,14 +100,11 @@ import org.apache.nifi.processor.util.StandardValidators;
 public class WatchDirectory extends AbstractSessionFactoryProcessor {
 	public static final String WATCH_PROPERTY_NAME = "watch.property.name";
 	public static final String WATCH_EVENT_TYPE = "watch.event.type";
-	public static final String FILE_CREATION_TIME_ATTRIBUTE = "file.creationTime";
 	public static final String FILE_LAST_MODIFY_TIME_ATTRIBUTE = "file.lastModifiedTime";
-	public static final String FILE_LAST_ACCESS_TIME_ATTRIBUTE = "file.lastAccessTime";
 	public static final String FILE_SIZE_ATTRIBUTE = "file.size";
 	public static final String FILE_OWNER_ATTRIBUTE = "file.owner";
 	public static final String FILE_GROUP_ATTRIBUTE = "file.group";
 	public static final String FILE_PERMISSIONS_ATTRIBUTE = "file.permissions";
-	public static final String FILE_MODIFY_DATE_ATTR_FORMAT = "yyyy-MM-dd'T'HH:mm:ssZ";
 
 	public static final PropertyDescriptor NOTIFY_ON_CREATE = new PropertyDescriptor
 			.Builder().name("NOTIFY_ON_CREATE")
@@ -157,7 +150,8 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 			.build();
 
 	public static final PropertyDescriptor FILE_FILTER = new Builder()
-			.name("File Filter")
+			.name("FileFilter")
+			.displayName("File filter")
 			.description("Only files whose names match the given regular expression will be picked up")
 			.required(true)
 			.defaultValue(".*")
@@ -166,6 +160,7 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 
 	public static final PropertyDescriptor MERGE_MODIFICATION_EVENTS = new Builder()
 			.name("MergeModificationEvents")
+			.displayName("Merge event timeout")
 			.description("If listening for modifications, this property will determine how long time (in millis) two or more "
 					+ "events will be considered as the same event. However, the merged event will not be emitted "
 					+ "until the last event has been received plus the number of millis give in this property.")
@@ -176,9 +171,22 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 
 	public static final PropertyDescriptor MAX_WAIT = new Builder()
 			.name("MaxWait")
+			.displayName("Max wait timeout")
 			.description("When merging events, this property will determine the maximum number of millis events will be merged.")
 			.required(false)
 			.defaultValue(Integer.toString(10_000))
+			.addValidator(StandardValidators.POSITIVE_INTEGER_VALIDATOR)
+			.build();
+
+	public static final PropertyDescriptor THREADS_MERGING = new Builder()
+			.name("MergingThreads")
+			.displayName("Threads")
+			.description("Merging event is done using a thread pool and this property determines how many threads there should be in the thread pool. "
+					+ "Each thread will merge events for a single file. This means that if the thread pool contains 1 thread and WatchDirectory gets "
+					+ "notified that there is a file (e.g. file-a.bin) that is updated a lot (within \"Merge event timeout\") for a long time. Any "
+					+ "additional files that gets updated will not create a flowfile until file-a.bin is done (or the \"Max wait\" is triggered).")
+			.required(false)
+			.defaultValue(Integer.toString(4))
 			.addValidator(StandardValidators.POSITIVE_INTEGER_VALIDATOR)
 			.build();
 
@@ -216,6 +224,7 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 		descriptors.add(FILE_FILTER);
 		descriptors.add(MERGE_MODIFICATION_EVENTS);
 		descriptors.add(MAX_WAIT);
+		descriptors.add(THREADS_MERGING);
 		this.descriptors = Collections.unmodifiableList(descriptors);
 
 		final Set<Relationship> relationships = new HashSet<Relationship>();
@@ -255,6 +264,7 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 		ignoreHiddenFiles = Boolean.toString(Boolean.TRUE).equalsIgnoreCase(context.getProperty(IGNORE_HIDDEN_FILES).getValue());
 		int maxEventAge = Integer.decode(context.getProperty(MERGE_MODIFICATION_EVENTS).getValue());
 		int maxWait = Integer.decode(context.getProperty(MAX_WAIT).getValue());
+		int threads = Integer.decode(context.getProperty(THREADS_MERGING).getValue());
 
 		String regexFileFilter = context.getProperty(FILE_FILTER).getValue();
 		fileFilter = Pattern.compile(regexFileFilter);
@@ -289,6 +299,7 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 				kinds, 
 				maxEventAge, 
 				maxWait, 
+				threads,
 				this::handleDirectoryEvents, 
 				getLogger());
 

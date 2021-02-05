@@ -37,7 +37,8 @@ public class DirectoryWatcherThread extends Thread {
 			Map<String, Path> paths, 
 			Collection<WatchEvent.Kind<?>> kinds,
 			int maxEventAge,
-			int maxWait,
+			int maxWait, 
+			int threads,
 			Consumer<DirectoryWatcherEvent<WatchEvent<?>>> eventConsumer,
 			ComponentLog logger) {
 		
@@ -53,7 +54,7 @@ public class DirectoryWatcherThread extends Thread {
 		
 		if(	kinds.contains(StandardWatchEventKinds.ENTRY_MODIFY) ||
 			kinds.contains(StandardWatchEventKinds.ENTRY_CREATE)) {
-			threadEventMerger = new EventMerger<WatchEvent<?>>(group, 2, this.eventConsumer);
+			threadEventMerger = new EventMerger<WatchEvent<?>>(group, threads, this.eventConsumer);
 			threadEventMerger.setEventWaitTimeout(maxEventAge);
 			threadEventMerger.setTotalMaxWait(Duration.of(maxWait, ChronoUnit.MILLIS));
 		}
