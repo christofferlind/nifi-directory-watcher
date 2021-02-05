@@ -67,9 +67,9 @@ public class WatchDirectoryTest {
     @Before
     public void init() throws Exception {
         processor = new WatchDirectory();
-        processor.setTesting(true);
         runner = TestRunners.newTestRunner(processor);
-//        context = runner.getProcessContext();
+        runner.setProperty(WatchDirectory.MERGE_MODIFICATION_EVENTS, Integer.toString(WAIT/2));
+        runner.setRunSchedule(WAIT);
         deleteTestDirectory();
         
 		runner.setProperty(new PropertyDescriptor.Builder()
@@ -77,23 +77,26 @@ public class WatchDirectoryTest {
                 .expressionLanguageSupported(ExpressionLanguageScope.NONE)
                 .addValidator(StandardValidators.FILE_EXISTS_VALIDATOR)
                 .required(false).dynamic(true).build(), testDir.toString());
-
     }
-
+    
     @Test
     public void testCreate() throws Exception {
         String filename = "hello.txt";
-        
+        runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.TRUE.toString());
+        runner.setProperty(WatchDirectory.NOTIFY_ON_MODIFIED, Boolean.FALSE.toString());
+        runner.setProperty(WatchDirectory.NOTIFY_ON_DELETED, Boolean.FALSE.toString());
+        runner.setProperty(WatchDirectory.MAX_WAIT, Integer.toString(10_000));
+
         CompletableFuture<Throwable> future = CompletableFuture
         	.runAsync(WatchDirectoryTest::sleepThread)
         	.thenRun(() -> createFile(filename))
         	.thenRun(WatchDirectoryTest::sleepThread)
-	    	.thenRun(WatchDirectoryTest::deleteTestDirectory)
 	    	.handle((value, exc) -> onError(exc));
         
         clearTransferStateAndRun();
         
         assertNull(future.get(10, TimeUnit.SECONDS));
+        runner.assertTransferCount(WatchDirectory.FAILURE, 0);
         runner.assertTransferCount(WatchDirectory.SUCCESS, 1);
         
         final List<MockFlowFile> successFiles1 = runner.getFlowFilesForRelationship(WatchDirectory.SUCCESS);
@@ -106,10 +109,13 @@ public class WatchDirectoryTest {
 
     @Test
     public void testMultiModifications() throws Exception {
-        runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.FALSE.toString());
+        runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.TRUE.toString());
         runner.setProperty(WatchDirectory.NOTIFY_ON_MODIFIED, Boolean.TRUE.toString());
         runner.setProperty(WatchDirectory.NOTIFY_ON_DELETED, Boolean.FALSE.toString());
-        runner.setProperty(WatchDirectory.MERGE_MODIFICATION_EVENTS, Integer.toString(500));
+        runner.setProperty(WatchDirectory.MERGE_MODIFICATION_EVENTS, Integer.toString(WAIT*2));
+        runner.setProperty(WatchDirectory.MAX_WAIT, Integer.toString(10_000));
+        
+        runner.setRunSchedule(WAIT*2);
         
         String filename = "hello.txt";
         CompletableFuture<Throwable> future = CompletableFuture
@@ -122,19 +128,19 @@ public class WatchDirectoryTest {
         	.thenRun(() -> addContent(filename, "Hello3"))
         	.thenRun(WatchDirectoryTest::sleepThread)
         	.thenRun(() -> addContent(filename, "Hello4"))
-        	.thenRun(() -> WatchDirectoryTest.sleepThread(1_000))
 	    	.handle((value, exc) -> onError(exc));
         
         clearTransferStateAndRun(5);
         
         assertNull(future.get(10, TimeUnit.SECONDS));
+        runner.assertTransferCount(WatchDirectory.FAILURE, 0);
         runner.assertTransferCount(WatchDirectory.SUCCESS, 1);
         
         final List<MockFlowFile> successFiles1 = runner.getFlowFilesForRelationship(WatchDirectory.SUCCESS);
         MockFlowFile flowFile = successFiles1.get(0);
         assertEquals(filename, flowFile.getAttribute(CoreAttributes.FILENAME.key()));
         assertEquals(testDir.toString(), flowFile.getAttribute(CoreAttributes.ABSOLUTE_PATH.key()));
-        assertEquals(StandardWatchEventKinds.ENTRY_MODIFY.name(), flowFile.getAttribute(WatchDirectory.WATCH_EVENT_TYPE));
+        assertEquals(StandardWatchEventKinds.ENTRY_CREATE.name() + "," + StandardWatchEventKinds.ENTRY_MODIFY.name(), flowFile.getAttribute(WatchDirectory.WATCH_EVENT_TYPE));
         assertEquals(dynamicPropertyName, flowFile.getAttribute(WatchDirectory.WATCH_PROPERTY_NAME));
     }
 
@@ -143,6 +149,10 @@ public class WatchDirectoryTest {
         String filenameFrom = ".hello.txt";
         String filenameTo = "world.txt";
 
+        runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.TRUE.toString());
+        runner.setProperty(WatchDirectory.NOTIFY_ON_MODIFIED, Boolean.FALSE.toString());
+        runner.setProperty(WatchDirectory.NOTIFY_ON_DELETED, Boolean.FALSE.toString());
+        
         CompletableFuture<Throwable> future = CompletableFuture
     	.runAsync(WatchDirectoryTest::sleepThread)
     	.thenRun(() -> {
@@ -154,12 +164,12 @@ public class WatchDirectoryTest {
 			}
     	})
     	.thenRun(WatchDirectoryTest::sleepThread)
-    	.thenRun(WatchDirectoryTest::deleteTestDirectory)
     	.handle((value, exc) -> onError(exc));
     
-	    clearTransferStateAndRun(5);
+	    clearTransferStateAndRun();
 	    
 	    assertNull(future.get(10, TimeUnit.SECONDS));
+        runner.assertTransferCount(WatchDirectory.FAILURE, 0);
         runner.assertTransferCount(WatchDirectory.SUCCESS, 1);
         
         final List<MockFlowFile> successFiles1 = runner.getFlowFilesForRelationship(WatchDirectory.SUCCESS);
@@ -215,6 +225,7 @@ public class WatchDirectoryTest {
     @Test
     public void testNoneCreate() throws Exception {
         runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.FALSE.toString());
+        runner.setProperty(WatchDirectory.NOTIFY_ON_MODIFIED, Boolean.FALSE.toString());
         runner.setProperty(WatchDirectory.NOTIFY_ON_DELETED, Boolean.TRUE.toString());
         
         String filename = "hello.txt";
@@ -222,7 +233,6 @@ public class WatchDirectoryTest {
 	    	.runAsync(WatchDirectoryTest::sleepThread)
 	    	.thenRun(() -> createFile(filename))
 	    	.thenRun(WatchDirectoryTest::sleepThread)
-	    	.thenRun(WatchDirectoryTest::deleteTestDirectory)
 	    	.handle((value, exc) -> onError(exc));
         
         clearTransferStateAndRun();
@@ -270,7 +280,7 @@ public class WatchDirectoryTest {
     }
 
     private void clearTransferStateAndRun() throws InterruptedException {
-    	clearTransferStateAndRun(1);
+    	clearTransferStateAndRun(5);
     }
     
     private void clearTransferStateAndRun(int count) throws InterruptedException {

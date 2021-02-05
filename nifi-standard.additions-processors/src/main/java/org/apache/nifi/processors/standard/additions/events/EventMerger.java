@@ -65,7 +65,8 @@ public class EventMerger<T> implements AutoCloseable {
 		TimedRunnable runnable = null;
 		
 		synchronized (lock) {
-			TimedRunnable r = cache.get(key);
+			String cacheKey = propName + key;
+			TimedRunnable r = cache.get(cacheKey);
 			if(r != null) {
 				r.events.add(event);
 				r.timeout.set(Instant.now().plus(eventWaitTimeout, ChronoUnit.MILLIS));
@@ -76,12 +77,12 @@ public class EventMerger<T> implements AutoCloseable {
 				runnable.timeout.set(Instant.now().plus(eventWaitTimeout, ChronoUnit.MILLIS));
 				runnable.onStartConsumingMessages = () -> {
 					synchronized (lock) {
-						cache.remove(key);
+						cache.remove(cacheKey);
 					}
 				};
 				
-				runnable.key = key;
-				cache.put(key, runnable);
+				runnable.key = cacheKey;
+				cache.put(cacheKey, runnable);
 			}
 		}
 		
@@ -154,8 +155,12 @@ public class EventMerger<T> implements AutoCloseable {
 					}
 
 					onStartConsumingMessages.run();
-					
+
+					try {
 					eventConsumer.accept(propName, key, events);
+					} catch (Throwable e) {
+						e.printStackTrace();
+					}
 					return;
 				}
 			} catch (InterruptedException e) {

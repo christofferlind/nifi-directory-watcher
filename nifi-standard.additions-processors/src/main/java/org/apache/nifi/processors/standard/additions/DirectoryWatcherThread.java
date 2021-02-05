@@ -7,6 +7,8 @@ import java.nio.file.WatchEvent;
 import java.nio.file.WatchEvent.Kind;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -25,8 +27,8 @@ public class DirectoryWatcherThread extends Thread {
 	private final ComponentLog logger;
 	
 	private volatile boolean stopped = false;
-
-	private EventMerger<WatchEvent<?>> mergeEventsCache = null;
+	
+	private EventMerger<WatchEvent<?>> threadEventMerger = null;
 	
 	private final TriConsumer<String, String, Collection<WatchEvent<?>>> eventConsumer;
 
@@ -35,6 +37,7 @@ public class DirectoryWatcherThread extends Thread {
 			Map<String, Path> paths, 
 			Collection<WatchEvent.Kind<?>> kinds,
 			int maxEventAge,
+			int maxWait,
 			TriConsumer<String, String, Collection<WatchEvent<?>>> eventConsumer,
 			ComponentLog logger) {
 		
@@ -48,9 +51,11 @@ public class DirectoryWatcherThread extends Thread {
 		this.eventConsumer = eventConsumer;
 		this.setDaemon(true);
 		
-		if(kinds.contains(StandardWatchEventKinds.ENTRY_MODIFY)) {
-			mergeEventsCache = new EventMerger<WatchEvent<?>>(group, 2, this.eventConsumer);
-			mergeEventsCache.setEventWaitTimeout(maxEventAge);
+		if(	kinds.contains(StandardWatchEventKinds.ENTRY_MODIFY) ||
+			kinds.contains(StandardWatchEventKinds.ENTRY_CREATE)) {
+			threadEventMerger = new EventMerger<WatchEvent<?>>(group, 2, this.eventConsumer);
+			threadEventMerger.setEventWaitTimeout(maxEventAge);
+			threadEventMerger.setTotalMaxWait(Duration.of(maxWait, ChronoUnit.MILLIS));
 		}
 	}
 	
@@ -87,9 +92,10 @@ public class DirectoryWatcherThread extends Thread {
 					List<WatchEvent<?>> events = key.pollEvents();
 					for (WatchEvent<?> watchEvent : events) {
 						//If it is a modification event, try to merge it
-						if(StandardWatchEventKinds.ENTRY_MODIFY.equals(watchEvent.kind())) {
-							String eventKey = String.format("%s,%s,%s", propName, watchEvent.kind().name(), watchEvent.context().toString());
-							mergeEventsCache.notify(propName, eventKey, watchEvent);
+						if(		StandardWatchEventKinds.ENTRY_MODIFY.equals(watchEvent.kind()) || 
+								StandardWatchEventKinds.ENTRY_CREATE.equals(watchEvent.kind())) {
+							String eventKey = watchEvent.context().toString();
+							threadEventMerger.notify(propName, eventKey, watchEvent);
 						} else {
 							eventConsumer.accept(propName, watchEvent.kind().name(), Collections.singletonList(watchEvent));
 						}
@@ -112,6 +118,14 @@ public class DirectoryWatcherThread extends Thread {
 					watchService.close();
 				} catch (Throwable e) {
 					logger.error(e.getMessage(), e);
+				}
+			}
+			
+			if(threadEventMerger != null) {
+				try {
+					threadEventMerger.close();
+					debugMessage("Closed event merger");
+				} catch (Throwable e) {
 				}
 			}
 		}
