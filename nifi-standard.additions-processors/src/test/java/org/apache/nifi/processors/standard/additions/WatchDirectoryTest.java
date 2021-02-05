@@ -121,7 +121,7 @@ public class WatchDirectoryTest {
         CompletableFuture<Throwable> future = CompletableFuture
         	.runAsync(WatchDirectoryTest::sleepThread)
         	.thenRun(() -> createFile(filename))
-        	.thenRun(() -> addContent(filename, "Hello"))
+        	.thenRun(() -> addContent(filename, "Hello1"))
         	.thenRun(WatchDirectoryTest::sleepThread)
         	.thenRun(() -> addContent(filename, "Hello2"))
         	.thenRun(WatchDirectoryTest::sleepThread)

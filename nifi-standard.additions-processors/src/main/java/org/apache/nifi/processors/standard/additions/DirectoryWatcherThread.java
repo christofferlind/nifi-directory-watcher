@@ -17,9 +17,9 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import org.apache.nifi.logging.ComponentLog;
-import org.apache.nifi.processors.standard.additions.events.EventMerger;
 
 public class DirectoryWatcherThread extends Thread {
 	private final Map<String, Path> paths;
@@ -30,7 +30,7 @@ public class DirectoryWatcherThread extends Thread {
 	
 	private EventMerger<WatchEvent<?>> threadEventMerger = null;
 	
-	private final TriConsumer<String, String, Collection<WatchEvent<?>>> eventConsumer;
+	private final Consumer<DirectoryWatcherEvent<WatchEvent<?>>> eventConsumer;
 
 	public DirectoryWatcherThread(
 			ThreadGroup group, 
@@ -38,7 +38,7 @@ public class DirectoryWatcherThread extends Thread {
 			Collection<WatchEvent.Kind<?>> kinds,
 			int maxEventAge,
 			int maxWait,
-			TriConsumer<String, String, Collection<WatchEvent<?>>> eventConsumer,
+			Consumer<DirectoryWatcherEvent<WatchEvent<?>>> eventConsumer,
 			ComponentLog logger) {
 		
 		Objects.requireNonNull(paths);
@@ -91,13 +91,13 @@ public class DirectoryWatcherThread extends Thread {
 					
 					List<WatchEvent<?>> events = key.pollEvents();
 					for (WatchEvent<?> watchEvent : events) {
+						String eventKey = watchEvent.context().toString();
 						//If it is a modification event, try to merge it
 						if(		StandardWatchEventKinds.ENTRY_MODIFY.equals(watchEvent.kind()) || 
 								StandardWatchEventKinds.ENTRY_CREATE.equals(watchEvent.kind())) {
-							String eventKey = watchEvent.context().toString();
 							threadEventMerger.notify(propName, eventKey, watchEvent);
 						} else {
-							eventConsumer.accept(propName, watchEvent.kind().name(), Collections.singletonList(watchEvent));
+							eventConsumer.accept(new DirectoryWatcherEvent<>(propName, eventKey, Collections.singleton(watchEvent)));
 						}
 					}
 				} catch (Throwable e) {

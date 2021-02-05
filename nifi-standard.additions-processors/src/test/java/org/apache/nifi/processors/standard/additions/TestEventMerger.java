@@ -5,16 +5,18 @@ import static org.junit.Assert.assertEquals;
 
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Vector;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import org.apache.nifi.processors.standard.additions.events.EventMerger;
 import org.junit.Test;
 
 public class TestEventMerger {
@@ -27,12 +29,12 @@ public class TestEventMerger {
     			.mapToObj(i -> String.format("t1-%d", i))
     			.collect(Collectors.toList());
     		
-    	Collection<String> foundEvents = new ArrayList<>(messageCount);
     	AtomicInteger counter = new AtomicInteger(0);
+    	Map<String, Integer> eventCounts = new LinkedHashMap<>(sentEvents.size());
     	
-    	TriConsumer<String, String, Collection<String>> handleEvents = (prop, key, collection) -> {
-    		foundEvents.addAll(collection);
+    	Consumer<DirectoryWatcherEvent<String>> handleEvents = event -> {
     		counter.incrementAndGet();
+    		eventCounts.putAll(event.getCounter());
     	};
     	
     	try(EventMerger<String> merger = new EventMerger<String>(Thread.currentThread().getThreadGroup(), 1, handleEvents)){
@@ -45,18 +47,17 @@ public class TestEventMerger {
 		};
 		
 		assertEquals(1, counter.get());
-		assertArrayEquals(sentEvents.toArray(), foundEvents.toArray());
+		assertArrayEquals(sentEvents.toArray(), eventCounts.keySet().toArray());
     }
 
     @Test
     public void testMultiKeys() throws Exception {
-    	Collection<String> foundEvents = new ArrayList<>(10);
-    	
     	AtomicInteger counter = new AtomicInteger(0);
+    	Map<String, Integer> eventCounts = new LinkedHashMap<>();
     	
-    	TriConsumer<String, String, Collection<String>> handleEvents = (prop, key, collection) -> {
-    		foundEvents.addAll(collection);
+    	Consumer<DirectoryWatcherEvent<String>> handleEvents = event -> {
     		counter.incrementAndGet();
+    		eventCounts.putAll(event.getCounter());
     	};
     	
     	try(EventMerger<String> merger = new EventMerger<String>(Thread.currentThread().getThreadGroup(), 1, handleEvents)){
@@ -71,7 +72,7 @@ public class TestEventMerger {
 		};
 		
 		assertEquals(2, counter.get());
-		assertArrayEquals(new String[] {"t1-1", "t1-2", "t1-3", "t2-1", "t2-2"}, foundEvents.toArray());
+		assertArrayEquals(new String[] {"t1-1", "t1-2", "t1-3", "t2-1", "t2-2"}, eventCounts.keySet().toArray());
     }
 
     
@@ -84,12 +85,12 @@ public class TestEventMerger {
     	
     	Object lock = new Object();
     	
-    	TriConsumer<String, String, Collection<String>> handleEvents = (prop, key, collection) -> {
+    	Consumer<DirectoryWatcherEvent<String>> handleEvents = event -> {
     		synchronized (lock) {
-    			foundEvents.addAll(collection);
+    			foundEvents.addAll(event.getCounter().keySet());
     			int count = counter.incrementAndGet();
     			if(count == 1)
-    				assertEquals("t3", key);
+    				assertEquals("t3", event.getKey());
 			}
     	};
     	
@@ -132,8 +133,8 @@ public class TestEventMerger {
     	
     	AtomicInteger counter = new AtomicInteger(0);
     	
-    	TriConsumer<String, String, Collection<Integer>> handleEvents = (prop, key, collection) -> {
-    		assertArrayEquals(expectedBatch, collection.toArray(new Integer[collection.size()]));
+    	Consumer<DirectoryWatcherEvent<Integer>> handleEvents = event -> {
+//    		assertArrayEquals(expectedBatch, collection.toArray(new Integer[collection.size()]));
     		counter.incrementAndGet();
     	};
     	
@@ -164,6 +165,9 @@ public class TestEventMerger {
     @Test
     public void testMaxWait() throws Throwable {
     	int events = 20;
+    	int expectedBatches = 4;
+    	int expectedBatcheSize = events / expectedBatches;
+    	int sleepBatch = 200;
     	
     	Integer[] expectedBatch = new Integer[events];
     	for (int i = 0; i < expectedBatch.length; i++) {
@@ -172,31 +176,51 @@ public class TestEventMerger {
     	
     	AtomicInteger counter = new AtomicInteger(0);
     	
-    	TriConsumer<String, String, Collection<Integer>> handleEvents = (prop, key, collection) -> {
-//    		System.out.println(collection.stream().map(i -> Integer.toString(i)).collect(Collectors.joining(",")));
-    		assertEquals(5, collection.size());
+    	Collection<Map<Integer, Integer>> counterEvents = new HashSet<>(expectedBatches);
+    	
+    	Consumer<DirectoryWatcherEvent<Integer>> handleEvents = event -> {
     		counter.incrementAndGet();
+    		counterEvents.add(event.getCounter());
+//    		System.out.println(event.getCounter());
     	};
     	
     	AtomicReference<Throwable> errors = new AtomicReference<>(null);
     	
     	try(EventMerger<Integer> merger = new EventMerger<Integer>(Thread.currentThread().getThreadGroup(), 1, handleEvents)){
+    		int sleepEvent = sleepBatch / expectedBatcheSize;
+    		int sleepEventTimeout = (int) (sleepBatch / 2);
+    		int sleepTotal = (int) (sleepBatch * 1.1);
+//    		System.out.println("Event sleep: " + sleepEvent);
+//    		System.out.println("Batch sleep: " + sleepBatch);
+//    		System.out.println("Event timeout: " + sleepEventTimeout);
+//    		System.out.println("TotalMaxWait: " + sleepTotal);
+    		
     		merger.setOnError(errors::set);
-    		merger.setEventWaitTimeout(300);
-    		merger.setTotalMaxWait(Duration.of(500, ChronoUnit.MILLIS));
+    		merger.setEventWaitTimeout(sleepEventTimeout);
+    		merger.setTotalMaxWait(Duration.of(sleepTotal, ChronoUnit.MILLIS));
 
+//    		Instant start = Instant.now();
     		for (int i = 0; i < events; i++) {
+    			if(i % expectedBatcheSize == 0) {
+//    				if(i!=0) System.out.println("Batch: " + i + ", " + Duration.between(start, Instant.now()).toMillis());
+//    				start = Instant.now();
+    				Thread.sleep(sleepBatch);
+    			}
+
     			merger.notify("prop", "t1", i);
-    			Thread.sleep(110);
+    			Thread.sleep(sleepEvent);
 			}
 
-    		Thread.sleep(200);
+    		Thread.sleep(sleepTotal);
 		};
 		
 		Throwable throwable = errors.get();
 		if(throwable != null)
 			throw throwable;
 		
-		assertEquals(4, counter.get());
+		assertEquals(expectedBatches, counter.get());
+		for (Map<Integer, Integer> entry : counterEvents) {
+			assertEquals(expectedBatcheSize, entry.values().stream().mapToInt(Integer::valueOf).sum());
+		}
     }
 }

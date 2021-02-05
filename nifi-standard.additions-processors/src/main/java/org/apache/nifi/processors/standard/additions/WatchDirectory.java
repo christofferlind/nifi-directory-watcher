@@ -314,7 +314,7 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 		context.yield();
 	}
 
-	private void handleDirectoryEvents(String propName, String eventKey, Collection<WatchEvent<?>> events) {
+	private void handleDirectoryEvents(DirectoryWatcherEvent<WatchEvent<?>> event) {
 		debugMessage("Got event");
 
 		ProcessSessionFactory sessionFactory = sessionFactoryReference.get();
@@ -326,12 +326,12 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 			return;
 		}
 
-		Path affectedPath = paths.get(propName);
+		Path affectedPath = paths.get(event.getProperty());
 
 		Collection<String> kinds = new HashSet<>(4);
 
 		String filename = null;
-		for (WatchEvent<?> e : events) {
+		for (WatchEvent<?> e : event.getCounter().keySet()) {
 			String eventFileName = e.context().toString();
 			if(filename == null) {
 				filename = eventFileName;
@@ -358,7 +358,7 @@ public class WatchDirectory extends AbstractSessionFactoryProcessor {
 		FlowFile flowFile = session.create();
 
 		Map<String, String> attributes = createAttributes(filename, affectedPath);
-		attributes.put(WATCH_PROPERTY_NAME, propName);
+		attributes.put(WATCH_PROPERTY_NAME, event.getProperty());
 		attributes.put(WATCH_EVENT_TYPE, String.join(",", kinds));
 
 		flowFile = session.putAllAttributes(flowFile, attributes);
