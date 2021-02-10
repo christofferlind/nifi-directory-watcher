@@ -21,14 +21,21 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.StandardWatchEventKinds;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
@@ -113,14 +120,57 @@ public class WatchDirectoryTest {
         assertEquals(StandardWatchEventKinds.ENTRY_CREATE.name(), flowFile.getAttribute(WatchDirectory.WATCH_EVENT_TYPE));
         assertEquals(dynamicPropertyName, flowFile.getAttribute(WatchDirectory.WATCH_PROPERTY_NAME));
     }
-    
+
     @Test
-    public void testRsync() throws Exception {
+    //@Ignore("Make sure to the enviroment variable wd.test.irl to a valid rsync command without the destination and wd.test.irl.count")
+    public void testIRLRsync() throws Throwable {
+    	String envVariable = "wd.test.irl";
+    	String envCountVariable = "wd.test.irl.count";
+    	
+    	String userInput = System.getenv(envVariable);
+    	
+    	if(userInput == null || userInput.isBlank()) {
+			throw new IllegalArgumentException("Environment variable \"" + envVariable + "\" must be set. (Example: \"rsync -rhitP /path/to/source/\")");
+		}
+
+    	int expectedFiles = Integer.decode(System.getenv(envCountVariable));
+    	
+    	if(expectedFiles < 0)
+    		throw new IllegalArgumentException("Are you sure you want to run a test with a negative amount of files?!");
+    	
     	runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.TRUE.toString());
     	runner.setProperty(WatchDirectory.NOTIFY_ON_MODIFIED, Boolean.TRUE.toString());
     	runner.setProperty(WatchDirectory.NOTIFY_ON_DELETED, Boolean.FALSE.toString());
 
-    	runner.setRunSchedule(WAIT*2);
+    	List<String> cmd = new ArrayList<>();
+    	cmd.add("sh");
+    	cmd.add("-c");
+    	cmd.add(userInput + " " + testDir.toString() + "/");
+
+    	CompletableFuture<Throwable> future = CompletableFuture
+    	.runAsync(WatchDirectoryTest::sleepThread)
+    	.thenRun(() -> shellExecute(cmd.toArray(new String[cmd.size()])))
+    	.handle(WatchDirectoryTest::ifErrorReturnException);
+
+    	//Trigger processor once every second
+    	runner.setRunSchedule(1_000);
+    	//Check 10 times for new files
+    	clearTransferStateAndRun(20);
+
+    	assertDoneWithNoException(future);
+    	
+    	runner.assertTransferCount(WatchDirectory.FAILURE, 0);
+    	runner.assertTransferCount(WatchDirectory.SUCCESS, expectedFiles);
+    }
+
+    
+    @Test
+    public void testRsync() throws Throwable {
+    	runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.TRUE.toString());
+    	runner.setProperty(WatchDirectory.NOTIFY_ON_MODIFIED, Boolean.TRUE.toString());
+    	runner.setProperty(WatchDirectory.NOTIFY_ON_DELETED, Boolean.FALSE.toString());
+
+    	runner.setRunSchedule(1_000);
 
     	String filename = "hello.txt";
 
@@ -130,13 +180,14 @@ public class WatchDirectoryTest {
     	int fileSize = 300;
 		shellExecute("fallocate -l " + fileSize + "M " + fileSrc);
 
-    	CompletableFuture<Void> future = CompletableFuture
+    	CompletableFuture<Throwable> future = CompletableFuture
     	.runAsync(WatchDirectoryTest::sleepThread)
-    	.thenRun(() -> shellExecute("rsync -hitP " + fileSrc + " " + fileDst));
+    	.thenRun(() -> shellExecute("rsync -hitP " + fileSrc + " " + fileDst))
+    	.handle(WatchDirectoryTest::ifErrorReturnException);
 
     	clearTransferStateAndRun(10);
     	
-    	assertTrue(future.isDone());
+    	assertDoneWithNoException(future);
 
     	runner.assertTransferCount(WatchDirectory.FAILURE, 0);
     	runner.assertTransferCount(WatchDirectory.SUCCESS, 1);
@@ -149,13 +200,103 @@ public class WatchDirectoryTest {
     	assertEquals(dynamicPropertyName, flowFile.getAttribute(WatchDirectory.WATCH_PROPERTY_NAME));
     	assertEquals(fileSize * 1024 * 1024, Integer.decode(flowFile.getAttribute(WatchDirectory.FILE_SIZE_ATTRIBUTE)).intValue());
     }
+    
+    
+    @Test
+    public void testMultiFiles() throws Exception {
+    	runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.TRUE.toString());
+    	runner.setProperty(WatchDirectory.NOTIFY_ON_MODIFIED, Boolean.TRUE.toString());
+    	runner.setProperty(WatchDirectory.NOTIFY_ON_DELETED, Boolean.FALSE.toString());
+    	runner.setProperty(WatchDirectory.FILE_FILTER, "dst-.*\\.bin");
+
+    	runner.setRunSchedule(WAIT*2);
+
+    	String fileNameFormatDst = "dst-file-%d.bin";
+    	
+    	Map<Integer, String> filesCreatedOrder = new LinkedHashMap<>(3);
+    	filesCreatedOrder.put(500, "rsync -hiPt");
+    	filesCreatedOrder.put(10, "mv");
+    	filesCreatedOrder.put(100, "cp");
+    	filesCreatedOrder.put(150, "mv");
+    	
+    	List<Integer> expectedFileSizeOrder = new ArrayList<>(filesCreatedOrder.size());
+    	expectedFileSizeOrder.add(10);
+    	expectedFileSizeOrder.add(150);
+    	expectedFileSizeOrder.add(100);
+    	expectedFileSizeOrder.add(500);
+
+    	List<CompletableFuture<?>> futures = new ArrayList<>(filesCreatedOrder.size());
+    	
+    	for (Entry<Integer, String> ent : filesCreatedOrder.entrySet()) {
+    		Integer fileSize = ent.getKey();
+    		String command = ent.getValue();
+    		
+    		String fileSrc = String.format("%s/src-file-%d.bin", testDir.toString(), fileSize);
+			String fileDst = String.format("%s/" + fileNameFormatDst, testDir.toString(), fileSize);
+			
+    		shellExecute("fallocate -l " + fileSize + "M " + fileSrc);
+
+    		String finalCommand = String.format("%s %s %s", command, fileSrc, fileDst);
+    		
+    		CompletableFuture<Void> future = CompletableFuture
+    				.runAsync(WatchDirectoryTest::sleepThread)
+    				.thenRun(() -> shellExecute(finalCommand));
+    		
+    		futures.add(future);
+		}
+
+    	clearTransferStateAndRun(15);
+    	
+    	assertTrue(CompletableFuture.allOf(futures.toArray(new CompletableFuture[futures.size()])).isDone());
+
+    	runner.assertTransferCount(WatchDirectory.FAILURE, 0);
+    	runner.assertTransferCount(WatchDirectory.SUCCESS, filesCreatedOrder.size());
+
+    	final List<MockFlowFile> successFiles = runner.getFlowFilesForRelationship(WatchDirectory.SUCCESS);
+    	
+    	for (int i = 0; i < successFiles.size(); i++) {
+    		MockFlowFile flowFile = successFiles.get(i);
+    		Integer expectedFileSize = expectedFileSizeOrder.get(i);
+			
+    		assertEquals(String.format(fileNameFormatDst, expectedFileSize), flowFile.getAttribute(CoreAttributes.FILENAME.key()));
+    		assertEquals(testDir.toString(), flowFile.getAttribute(CoreAttributes.ABSOLUTE_PATH.key()));
+    		assertEquals(dynamicPropertyName, flowFile.getAttribute(WatchDirectory.WATCH_PROPERTY_NAME));
+    		assertEquals(expectedFileSize * 1024 * 1024, Integer.decode(flowFile.getAttribute(WatchDirectory.FILE_SIZE_ATTRIBUTE)).intValue());
+		}
+    }
 
     private void shellExecute(String cmd) {
+    	try {
+    		Process process = Runtime.getRuntime().exec(cmd);
+    		waitFor(process);
+    	} catch (Exception e) {
+    		throw new IllegalStateException(e);
+    	}
+    }
+    
+    private void shellExecute(String[] cmd) {
 		try {
 			Process process = Runtime.getRuntime().exec(cmd);
-			process.waitFor();
+			waitFor(process);
 		} catch (Exception e) {
 			throw new IllegalStateException(e);
+		}
+	}
+
+	private void waitFor(Process process) throws InterruptedException, IOException {
+		if(process.waitFor() != 0) {
+			String errorOuput = "";
+			try(InputStream errorStream = process.getErrorStream();
+					InputStream stream = process.getInputStream();
+					ByteArrayOutputStream bos = new ByteArrayOutputStream()){
+				errorStream.transferTo(bos);
+				stream.transferTo(System.out);
+				
+				errorOuput = new String(bos.toByteArray(), StandardCharsets.UTF_8);
+			}
+			
+			System.err.println(errorOuput);
+			throw new IllegalStateException("Command did not complete normally: " + errorOuput);
 		}
 	}
 
@@ -412,5 +553,17 @@ public class WatchDirectoryTest {
 			throw new IllegalStateException(e);
 		}
 		
+    }
+    
+    private static final void assertDoneWithNoException(CompletableFuture<Throwable> future) throws Throwable {
+    	assertTrue(future.isDone());
+    	
+    	Throwable throwable = future.get();
+    	if(throwable != null)
+    		throw throwable;
+    }
+    
+    private static final Throwable ifErrorReturnException(Object result, Throwable exc) {
+    	return exc;
     }
 }
