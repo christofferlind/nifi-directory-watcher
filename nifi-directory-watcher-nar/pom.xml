@@ -19,7 +19,7 @@
     <parent>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-directory-watcher</artifactId>
-        <version>${dw.version}</version>
+        <version>1.0</version>
     </parent>
 
     <artifactId>nifi-directory-watcher-nar</artifactId>
@@ -33,7 +33,7 @@
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-directory-watcher-processors</artifactId>
-            <version>${dw.version}</version>
+            <version>1.0</version>
         </dependency>
     </dependencies>
 

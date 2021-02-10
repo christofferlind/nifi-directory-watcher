@@ -23,17 +23,16 @@
     </parent>
 
     <properties>
-    	<dw.version>1.0</dw.version>
     	<nifi.version>1.11.3</nifi.version>
     </properties>
 
     <artifactId>nifi-directory-watcher</artifactId>
-    <version>${dw.version}</version>
+    <version>1.0</version>
     <packaging>pom</packaging>
 
     <modules>
-        <module>nifi-standard.additions-processors</module>
-        <module>nifi-standard.additions-nar</module>
+        <module>nifi-directory-watcher-processors</module>
+        <module>nifi-directory-watcher-nar</module>
     </modules>
 
 </project>
