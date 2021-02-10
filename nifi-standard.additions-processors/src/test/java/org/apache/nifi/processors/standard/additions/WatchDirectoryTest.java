@@ -52,6 +52,7 @@ import org.junit.After;
 import org.junit.Assume;
 import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Test;
 
 
@@ -122,7 +123,7 @@ public class WatchDirectoryTest {
     }
 
     @Test
-    //@Ignore("Make sure to the enviroment variable wd.test.irl to a valid rsync command without the destination and wd.test.irl.count")
+    @Ignore("Make sure to the enviroment variable wd.test.irl to a valid rsync command without the destination and wd.test.irl.count")
     public void testIRLRsync() throws Throwable {
     	String envVariable = "wd.test.irl";
     	String envCountVariable = "wd.test.irl.count";
@@ -178,11 +179,11 @@ public class WatchDirectoryTest {
     	String fileDst = testDir.toString() + "/" + filename;
 
     	int fileSize = 300;
-		shellExecute("fallocate -l " + fileSize + "M " + fileSrc);
+		shellExecute("fallocate -l " + fileSize + "M " + fileSrc, true);
 
     	CompletableFuture<Throwable> future = CompletableFuture
     	.runAsync(WatchDirectoryTest::sleepThread)
-    	.thenRun(() -> shellExecute("rsync -hitP " + fileSrc + " " + fileDst))
+    	.thenRun(() -> shellExecute("rsync -hitP " + fileSrc + " " + fileDst, true))
     	.handle(WatchDirectoryTest::ifErrorReturnException);
 
     	clearTransferStateAndRun(10);
@@ -203,7 +204,8 @@ public class WatchDirectoryTest {
     
     
     @Test
-    public void testMultiFiles() throws Exception {
+    @Ignore("Most of the times, this completes as expected. But some times the second move comes before the first one.")
+    public void testMultiFiles() throws Throwable {
     	runner.setProperty(WatchDirectory.NOTIFY_ON_CREATE, Boolean.TRUE.toString());
     	runner.setProperty(WatchDirectory.NOTIFY_ON_MODIFIED, Boolean.TRUE.toString());
     	runner.setProperty(WatchDirectory.NOTIFY_ON_DELETED, Boolean.FALSE.toString());
@@ -213,42 +215,45 @@ public class WatchDirectoryTest {
 
     	String fileNameFormatDst = "dst-file-%d.bin";
     	
-    	Map<Integer, String> filesCreatedOrder = new LinkedHashMap<>(3);
+    	Map<Integer, String> filesCreatedOrder = new LinkedHashMap<>(4);
     	filesCreatedOrder.put(500, "rsync -hiPt");
-    	filesCreatedOrder.put(10, "mv");
-    	filesCreatedOrder.put(100, "cp");
+    	filesCreatedOrder.put(1, "mv");
+    	filesCreatedOrder.put(200, "cp");
     	filesCreatedOrder.put(150, "mv");
     	
     	List<Integer> expectedFileSizeOrder = new ArrayList<>(filesCreatedOrder.size());
-    	expectedFileSizeOrder.add(10);
+    	expectedFileSizeOrder.add(1);
     	expectedFileSizeOrder.add(150);
-    	expectedFileSizeOrder.add(100);
+    	expectedFileSizeOrder.add(200);
     	expectedFileSizeOrder.add(500);
 
     	List<CompletableFuture<?>> futures = new ArrayList<>(filesCreatedOrder.size());
     	
-    	for (Entry<Integer, String> ent : filesCreatedOrder.entrySet()) {
-    		Integer fileSize = ent.getKey();
-    		String command = ent.getValue();
-    		
-    		String fileSrc = String.format("%s/src-file-%d.bin", testDir.toString(), fileSize);
-			String fileDst = String.format("%s/" + fileNameFormatDst, testDir.toString(), fileSize);
-			
-    		shellExecute("fallocate -l " + fileSize + "M " + fileSrc);
+    	CompletableFuture<Throwable> future = CompletableFuture
+    			.runAsync(WatchDirectoryTest::sleepThread)
+    			.thenRun(() -> {
+    				for (Entry<Integer, String> ent : filesCreatedOrder.entrySet()) {
+    					Integer fileSize = ent.getKey();
+    					String command = ent.getValue();
 
-    		String finalCommand = String.format("%s %s %s", command, fileSrc, fileDst);
-    		
-    		CompletableFuture<Void> future = CompletableFuture
-    				.runAsync(WatchDirectoryTest::sleepThread)
-    				.thenRun(() -> shellExecute(finalCommand));
-    		
-    		futures.add(future);
-		}
+    					String fileSrc = String.format("%s/src-file-%d.bin", testDir.toString(), fileSize);
+    					String fileDst = String.format("%s/" + fileNameFormatDst, testDir.toString(), fileSize);
+
+    					shellExecute("fallocate -l " + fileSize + "M " + fileSrc, true);
+
+    					String finalCommand = String.format("%s %s %s", command, fileSrc, fileDst);
+
+    					shellExecute(finalCommand, false);
+    				}
+    			})
+    			.handle(WatchDirectoryTest::ifErrorReturnException);
+    	
+    	futures.add(future);
 
     	clearTransferStateAndRun(15);
     	
-    	assertTrue(CompletableFuture.allOf(futures.toArray(new CompletableFuture[futures.size()])).isDone());
-
+    	assertDoneWithNoException(future);
+    	
     	runner.assertTransferCount(WatchDirectory.FAILURE, 0);
     	runner.assertTransferCount(WatchDirectory.SUCCESS, filesCreatedOrder.size());
 
@@ -265,10 +270,10 @@ public class WatchDirectoryTest {
 		}
     }
 
-    private void shellExecute(String cmd) {
+    private void shellExecute(String cmd, boolean wait) {
     	try {
     		Process process = Runtime.getRuntime().exec(cmd);
-    		waitFor(process);
+    		if(wait) waitFor(process);
     	} catch (Exception e) {
     		throw new IllegalStateException(e);
     	}
